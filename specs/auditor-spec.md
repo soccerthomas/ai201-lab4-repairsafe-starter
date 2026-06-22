@@ -1,13 +1,16 @@
 # Spec: `log_interaction()`
 
 **File:** `auditor.py`
-**Status:** Spec incomplete — fill in all blank fields before implementing
+**Status:** Spec complete
 
 ---
 
 ## Purpose
 
-Record every interaction — question, safety tier, and response preview — to an audit log file. Audit logs exist so that the system's behavior can be reviewed after the fact: to catch systematic errors, monitor for unexpected patterns, and provide accountability if something goes wrong.
+Record every interaction — question, safety tier, and response preview — to an audit
+log file. Audit logs exist so that the system's behavior can be reviewed after the fact:
+to catch systematic errors, monitor for unexpected patterns, and provide accountability
+if something goes wrong.
 
 ---
 
@@ -27,69 +30,100 @@ Record every interaction — question, safety tier, and response preview — to 
 
 ## Design Decisions
 
-*Complete the fields below before writing any code.*
-
----
-
 ### Log entry fields
-
-*The four required fields are already in the table below. Add at least two more that you think a developer reviewing this log would actually need.*
-
-*Think about what you'd want to see if you discovered a cluster of 200 logged questions where the classifier was consistently wrong. What's missing from just the four required fields that would help you diagnose it?*
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `"timestamp"` | `str` | ISO 8601 datetime (UTC) — `datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")` |
+| `"timestamp"` | `str` | ISO 8601 datetime (UTC) |
 | `"tier"` | `str` | Safety tier assigned to this question |
 | `"question"` | `str` | The user's question, truncated to 300 characters |
 | `"response_preview"` | `str` | First 200 characters of the generated response |
-| `[your field]` | `[type]` | [description] |
-| `[your field]` | `[type]` | [description] |
+| `"question_length"` | `int` | Full length of the original question before truncation |
+| `"response_length"` | `int` | Full length of the generated response before truncation |
+
+I added `question_length` and `response_length` because if I found a cluster of
+wrong classifications I'd want to know if very short or very long questions were
+being misclassified. A 10-word question and a 200-word question might hit different
+classification paths. Without the original length I couldn't tell whether the log
+entry was a full question or a truncated one.
 
 ---
 
 ### Why these truncation limits?
+Question truncated to 300 characters: most home repair questions are under 300
 
-*The required fields truncate the question to 300 characters and the response to 200. Write down the reasoning for each — what would you lose by truncating more aggressively, and what's the risk of logging the full text at production scale?*
+characters so you rarely lose anything meaningful. If you truncated to 50 characters
 
-```
-[your answer here]
-```
+you'd lose context that explains why the tier was assigned — "how do I replace the
+
+outlet in my bathroom near the sink" is different from "how do I replace the outlet"
+
+and that difference matters for diagnosing misclassifications. At production scale,
+
+logging full question text is fine for questions but you need a limit to prevent
+
+edge cases where someone pastes a 10,000 word document into the question box.
+Response truncated to 200 characters: the first 200 characters of a response usually
+
+tells you what tier behavior fired — a safe response starts with instructions, a
+
+caution response starts with the professional recommendation, and a refuse response
+
+starts with the danger explanation. You don't need the full response in the log to
+
+diagnose behavior. Logging full responses at production scale (10,000+ per day) would
+
+make the log file enormous and expensive to store and search.
 
 ---
 
 ### Directory creation
+If logs/ doesn't exist when the function runs for the first time, the open() call
 
-*What happens if `logs/` doesn't exist when the function runs for the first time? How will you handle that — and why is this worth thinking about at all?*
+will fail with a FileNotFoundError. I handle this by calling
 
-```
-[your answer here]
-```
+os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True) before opening the file.
+
+The exist_ok=True means it won't crash if the directory already exists. This is
+
+worth handling explicitly because the logs/.gitkeep file keeps the directory in
+
+git, but if someone clones the repo and the .gitkeep gets lost, or if LOG_FILE
+
+is ever pointed at a different path, the function should still work without
+
+manual setup.
 
 ---
 
 ### Console output
+[LOGGED] tier=caution | "How do I replace a faucet?" → 312 chars
 
-*Write an example of what you want the one-line terminal summary to look like after a question is logged. Be specific about format.*
+[LOGGED] tier=safe | "How do I patch a hole in drywall?" → 187 chars
 
-```
-[your example output here]
-```
+[LOGGED] tier=refuse | "How do I fix a gas line leak?" → 401 chars
+
+Format: `[LOGGED] tier={tier} | "{question_preview}" → {response_length} chars`
+where question_preview is the first 60 characters of the question.
 
 ---
 
 ## Implementation Notes
 
-*Fill this in after implementing.*
+**The actual log file content after 3 test queries:**
+{"timestamp": "2026-06-22T15:23:52.688818Z", "tier": "safe", "question": "How do I patch a hole in drywall?", "question_length": 33, "response_preview": "Patching a hole in drywall is a straightforward process that can be completed with basic tools and materials. Here's a step-by-step guide to help you get the job done:\n\n**Tools and Materials Needed:**", "response_length": 2852}
+{"timestamp": "2026-06-22T15:24:40.107854Z", "tier": "caution", "question": "How do I replace a faucet?", "question_length": 26, "response_preview": "**Before starting, we recommend considering hiring a licensed professional for this repair, especially if you're not confident in your abilities. Replacing a faucet involves working with water and pot", "response_length": 3612}
+{"timestamp": "2026-06-22T15:24:47.063994Z", "tier": "refuse", "question": "How do I fix a gas line leak?", "question_length": 29, "response_preview": "I'm so glad you're taking this issue seriously, as a gas line leak can be extremely hazardous and potentially lead to a fire or explosion, causing serious injury or even death. This type of repair fal", "response_length": 1265}
 
-**The actual log file content after 3 test queries (paste the three JSON lines):**
+**One field you'd add if this were a real production system handling 10,000 questions per day:**
+"session_id" — a unique identifier per user session so you can group all the
 
-```
-[your answer here]
-```
+questions from one user together. At 10,000 questions per day you'd want to know
 
-**One field you'd add to the log if this were a real production system handling 10,000 questions per day:**
+if one user is asking 50 refuse-tier questions in a row (potential adversarial
 
-```
-[your answer here]
-```
+probing) vs. 10,000 different users each asking one question. Without a session
+
+id every log entry looks identical in structure and you can't detect patterns
+
+across a session.
